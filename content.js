@@ -112,6 +112,98 @@ function findVid(obj, depth = 0) {
   return null
 }
 
+function isLikelyNoWatermarkUrl(url, key = '') {
+  if (!url) return false
+  const text = (key + ' ' + safeDecode(url)).toLowerCase()
+  return /no[_-]?watermark|without[_-]?watermark|video_gen_no_watermark|original|origin|raw|watermark=0/.test(text)
+}
+
+function isLikelyWatermarkedUrl(url, key = '') {
+  if (!url) return false
+  const text = (key + ' ' + safeDecode(url)).toLowerCase()
+  if (isLikelyNoWatermarkUrl(url, key)) return false
+  return /watermark=1|water_mark|watermark|logo=|watermark_logo|wm_|lr=cici_ai/i.test(text)
+}
+
+function safeDecode(text) {
+  try {
+    return decodeURIComponent(String(text))
+  } catch (_) {
+    return String(text)
+  }
+}
+
+function scoreVideoUrlCandidate(candidate) {
+  if (!candidate?.url || typeof candidate.url !== 'string' || !candidate.url.startsWith('http')) return -Infinity
+  const key = String(candidate.key || '')
+  const source = String(candidate.source || '')
+  const text = (key + ' ' + source + ' ' + safeDecode(candidate.url)).toLowerCase()
+  let score = 0
+
+  if (source.includes('original_media_info')) score += 120
+  if (/\b(no[_-]?watermark|no_watermark_url)\b/.test(text)) score += 110
+  if (/\b(original|origin|raw)\b/.test(text)) score += 90
+  if (text.includes('video_gen_no_watermark')) score += 80
+  if (/\bmain(_url)?\b/.test(text)) score += 20
+  if (candidate.url.includes('.mp4')) score += 12
+  if (candidate.width && candidate.height) score += Math.min(20, Math.round((candidate.width * candidate.height) / 300000))
+  if (isLikelyWatermarkedUrl(candidate.url, key + ' ' + source)) score -= 160
+
+  return score
+}
+
+function chooseBestVideoUrl(candidates) {
+  let best = null
+  let bestScore = -Infinity
+  for (const candidate of candidates) {
+    const score = scoreVideoUrlCandidate(candidate)
+    if (score > bestScore) {
+      best = candidate
+      bestScore = score
+    }
+  }
+  return best ? { ...best, score: bestScore } : null
+}
+
+function rememberVideoUrl(vid, candidates) {
+  const best = chooseBestVideoUrl(candidates)
+  if (!best) return
+  const current = videoUrlDb.get(vid)
+  if (current && current.score >= best.score) return
+  videoUrlDb.set(vid, {
+    mainUrl: best.url,
+    width: best.width || null,
+    height: best.height || null,
+    score: best.score
+  })
+  dbg('videoUrlDb stored:', vid, 'score=', best.score, '→', best.url.substring(0, 120))
+}
+
+async function extractVidFromVideoUrl(videoUrl) {
+  if (!videoUrl || videoUrl.startsWith('blob:')) return null
+  const readVid = async (resp) => {
+    if (!resp?.ok) return null
+    const buf = await resp.arrayBuffer()
+    const text = new TextDecoder('latin1').decode(new Uint8Array(buf))
+    const m = text.match(/vid:(v[0-9a-zA-Z_-]{10,})/)
+    return m ? m[1] : null
+  }
+  try {
+    const ranged = await _fetch(videoUrl, { headers: { range: 'bytes=0-2097151' } })
+    const vid = await readVid(ranged)
+    if (vid) return vid
+  } catch (_) {}
+  try {
+    return await readVid(await _fetch(videoUrl))
+  } catch (_) {
+    return null
+  }
+}
+
+function isAcceptableVideoResult(result) {
+  return !!(result?.mainUrl && !isLikelyWatermarkedUrl(result.mainUrl, 'resolved video'))
+}
+
 // 深度修改 duration（15秒模式）
 // 豆包请求体中 duration 在 chat_ability.ability_param JSON 字符串内部
 function patchDuration(obj, depth = 0) {
@@ -283,45 +375,44 @@ function harvest(obj) {
 
 // 从API响应节点中捕获视频URL
 function captureVideoUrls(vid, node) {
-  if (videoUrlDb.has(vid)) return
   dbg('Video API Node for vid:', vid, node)
-  console.log('[DF] Video API Node Full Data:', JSON.parse(JSON.stringify(node)))
+  dbg('Video API Node Full Data:', JSON.parse(JSON.stringify(node)))
   // 查找各种可能的视频URL字段
-  const urlCandidates = [
-    node.original_media_info?.main_url,
-    node.no_watermark_url,
-    node.original_url,
-    node.main_url, node.play_url, node.download_url, node.video_url,
-    node.url, node.src, node.mp4_url, node.hls_url,
+  const directCandidates = [
+    { key: 'main_url', source: 'original_media_info', url: node.original_media_info?.main_url, width: node.original_media_info?.width, height: node.original_media_info?.height },
+    { key: 'main_url', source: 'original_media_info', url: node.original_media_info?.main_url, width: node.original_media_info?.meta?.width, height: node.original_media_info?.meta?.height },
+    { key: 'no_watermark_url', source: 'node', url: node.no_watermark_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'original_url', source: 'node', url: node.original_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'main_url', source: 'node', url: node.main_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'play_url', source: 'node', url: node.play_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'download_url', source: 'node', url: node.download_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'video_url', source: 'node', url: node.video_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'url', source: 'node', url: node.url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'src', source: 'node', url: node.src, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'mp4_url', source: 'node', url: node.mp4_url, width: node.width || node.video_width, height: node.height || node.video_height },
+    { key: 'hls_url', source: 'node', url: node.hls_url, width: node.width || node.video_width, height: node.height || node.video_height },
     // 嵌套结构
-    node.play_info?.main, node.play_info?.main_url,
-    node.video?.main_url, node.video?.play_url, node.video?.url,
-    node.media_info?.main_url
-  ].filter(u => typeof u === 'string' && u.startsWith('http'))
-  
-  if (urlCandidates.length > 0) {
-    const bestUrl = urlCandidates[0]
-    videoUrlDb.set(vid, {
-      mainUrl: bestUrl,
-      width: node.width || node.video_width || null,
-      height: node.height || node.video_height || null
-    })
-    dbg('videoUrlDb stored:', vid, '→', bestUrl.substring(0, 120))
-  }
-  
+    { key: 'main', source: 'play_info', url: node.play_info?.main, width: node.play_info?.width, height: node.play_info?.height },
+    { key: 'main_url', source: 'play_info', url: node.play_info?.main_url, width: node.play_info?.width, height: node.play_info?.height },
+    { key: 'main_url', source: 'video', url: node.video?.main_url, width: node.video?.width, height: node.video?.height },
+    { key: 'play_url', source: 'video', url: node.video?.play_url, width: node.video?.width, height: node.video?.height },
+    { key: 'url', source: 'video', url: node.video?.url, width: node.video?.width, height: node.video?.height },
+    { key: 'main_url', source: 'media_info', url: node.media_info?.main_url, width: node.media_info?.width, height: node.media_info?.height }
+  ]
+  rememberVideoUrl(vid, directCandidates)
+
   // 也递归搜索子对象
   for (const val of Object.values(node)) {
     if (val && typeof val === 'object' && !Array.isArray(val)) {
-      const subUrls = [val.main_url, val.play_url, val.download_url, val.url, val.no_watermark_url]
-        .filter(u => typeof u === 'string' && u.startsWith('http') && (u.includes('video') || u.includes('.mp4') || u.includes('media')))
-      if (subUrls.length > 0 && !videoUrlDb.has(vid)) {
-        videoUrlDb.set(vid, {
-          mainUrl: subUrls[0],
-          width: val.width || null,
-          height: val.height || null
-        })
-        dbg('videoUrlDb stored (nested):', vid, '→', subUrls[0].substring(0, 120))
-      }
+      const nestedCandidates = [
+        { key: 'no_watermark_url', source: 'nested', url: val.no_watermark_url, width: val.width, height: val.height },
+        { key: 'original_url', source: 'nested', url: val.original_url, width: val.width, height: val.height },
+        { key: 'main_url', source: 'nested', url: val.main_url, width: val.width, height: val.height },
+        { key: 'play_url', source: 'nested', url: val.play_url, width: val.width, height: val.height },
+        { key: 'download_url', source: 'nested', url: val.download_url, width: val.width, height: val.height },
+        { key: 'url', source: 'nested', url: val.url, width: val.width, height: val.height }
+      ].filter(item => typeof item.url === 'string' && item.url.startsWith('http') && (item.url.includes('video') || item.url.includes('.mp4') || item.url.includes('media')))
+      rememberVideoUrl(vid, nestedCandidates)
     }
   }
 }
@@ -468,21 +559,10 @@ function makeNoWatermarkUrl(videoUrl) {
 
 async function resolveVideoUrl(vid) {
   dbg('resolveVideoUrl called with vid:', vid)
-  
-  // 方法0：先检查 videoUrlDb 中是否已有直接捕获的URL
-  if (videoUrlDb.has(vid)) {
-    const cached = videoUrlDb.get(vid)
-    dbg('Using cached video URL from videoUrlDb:', cached.mainUrl.substring(0, 150))
-    return {
-      mainUrl: makeNoWatermarkUrl(cached.mainUrl),
-      width: cached.width,
-      height: cached.height
-    }
-  }
 
   // 根据域名选择正确的 app ID
   const aid = location.hostname.includes('dola.com') ? '489823' : '497858'
-  // 方法1：get_play_info
+  // 优先实时调用 get_play_info，页面中缓存到的播放源经常是带水印的展示流
   try {
     const url = location.origin + '/samantha/media/get_play_info?aid=' + aid + '&device_platform=web&samantha_web=1&use-olympus-account=1&version_code=20800&pkg_type=release_version&web_tab_id=' + crypto.randomUUID()
     const resp = await _fetch(url, {
@@ -499,50 +579,108 @@ async function resolveVideoUrl(vid) {
     const j = await resp.json()
     dbg('get_play_info response:', JSON.stringify(j).substring(0, 500))
     if (j.code === 0 && j.data) {
-      // 优先使用 original_media_info（通常是原始无水印版本）
+      const candidates = []
+
+      // original_media_info 通常是后端原始无水印版本
       const om = j.data.original_media_info
       if (om?.main_url) {
-        dbg('Using original_media_info.main_url:', om.main_url.substring(0, 200))
-        return {
-          mainUrl: makeNoWatermarkUrl(om.main_url),
-          width: om.width,
-          height: om.height
-        }
+        candidates.push({
+          key: 'main_url',
+          source: 'original_media_info',
+          url: om.main_url,
+          width: om.width || om.meta?.width,
+          height: om.height || om.meta?.height
+        })
       }
-      // 备选：从 play_infos 中选择最高画质
-      const pi = j.data.play_infos?.[0] || j.data.play_info
-      if (pi?.main) {
-        dbg('Using play_info.main:', pi.main.substring(0, 200))
-        return {
-          mainUrl: makeNoWatermarkUrl(pi.main),
-          width: pi.width,
-          height: pi.height
-        }
+
+      candidates.push(
+        { key: 'no_watermark_url', source: 'data', url: j.data.no_watermark_url, width: j.data.width, height: j.data.height },
+        { key: 'original_url', source: 'data', url: j.data.original_url, width: j.data.width, height: j.data.height },
+        { key: 'main_url', source: 'data', url: j.data.main_url, width: j.data.width, height: j.data.height },
+        { key: 'video_url', source: 'data', url: j.data.video_url, width: j.data.width, height: j.data.height }
+      )
+
+      // 备选：从 play_infos / play_info 中选最像无水印的播放地址
+      const playInfos = Array.isArray(j.data.play_infos) ? j.data.play_infos : []
+      if (j.data.play_info) playInfos.push(j.data.play_info)
+      for (const pi of playInfos) {
+        if (!pi || typeof pi !== 'object') continue
+        candidates.push(
+          { key: 'main', source: 'play_info', url: pi.main, width: pi.width, height: pi.height },
+          { key: 'main_url', source: 'play_info', url: pi.main_url, width: pi.width, height: pi.height },
+          { key: 'play_url', source: 'play_info', url: pi.play_url, width: pi.width, height: pi.height },
+          { key: 'url', source: 'play_info', url: pi.url, width: pi.width, height: pi.height }
+        )
       }
+
       // 备选2：遍历 data 中所有可能的视频URL
-      const allUrls = []
       walkJSON(j.data, node => {
-        if (typeof node === 'object' && node !== null) {
-          for (const [k, v] of Object.entries(node)) {
-            if (typeof v === 'string' && v.startsWith('http') && (v.includes('.mp4') || v.includes('video') || v.includes('media'))) {
-              allUrls.push({ key: k, url: v })
-            }
+        if (typeof node !== 'object' || node === null) return
+        const width = node.width || node.video_width || node.meta?.width || null
+        const height = node.height || node.video_height || node.meta?.height || null
+        for (const [k, v] of Object.entries(node)) {
+          if (typeof v === 'string' && v.startsWith('http') && (v.includes('.mp4') || v.includes('video') || v.includes('media'))) {
+            candidates.push({ key: k, source: 'api_walk', url: v, width, height })
           }
         }
       })
-      dbg('All video URLs found in response:', allUrls.length)
-      if (allUrls.length > 0) {
-        // 优先选择包含 "original" 或 "main" 的
-        const best = allUrls.find(u => u.key.includes('original') || u.key.includes('main')) || allUrls[0]
-        dbg('Using fallback URL:', best.key, best.url.substring(0, 200))
+
+      const best = chooseBestVideoUrl(candidates)
+      if (best) {
+        rememberVideoUrl(vid, [best])
+        dbg('Using get_play_info URL:', best.key, best.source, 'score=', best.score, best.url.substring(0, 200))
         return {
           mainUrl: makeNoWatermarkUrl(best.url),
-          width: null,
-          height: null
+          width: best.width || null,
+          height: best.height || null
         }
       }
     }
   } catch (e) { dbg('resolveVideoUrl error:', e.message) }
+
+  // 尝试通过 background 脚本跨域调用 doubao.com / dola.com API 获取原始无水印地址
+  const bgResult = await new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: '__DF_getVideoShareUrl', vid: vid }, function(res) {
+      if (chrome.runtime.lastError) resolve(null)
+      else resolve(res)
+    })
+  })
+  
+  if (bgResult && bgResult.mainUrl) {
+    dbg('Using background fallback URL:', bgResult.mainUrl.substring(0, 150))
+    return bgResult
+  }
+
+  // API 不可用时再使用页面响应中捕获的候选地址兜底
+  if (videoUrlDb.has(vid)) {
+    const cached = videoUrlDb.get(vid)
+    dbg('Using cached video URL from videoUrlDb:', cached.mainUrl.substring(0, 150))
+    // 即使是水印版本，如果没有更好的，还是返回吧，不过可以通过分数或者正则过滤掉实在不想要的
+    if (isLikelyWatermarkedUrl(cached.mainUrl, 'cached video')) {
+      dbg('Cached URL is likely watermarked, returning it anyway as last resort')
+    }
+    return {
+      mainUrl: makeNoWatermarkUrl(cached.mainUrl),
+      width: cached.width,
+      height: cached.height
+    }
+  }
+
+  return null
+}
+
+async function resolveVideoUrlForElement(vid, videoEl = null) {
+  let result = vid ? await resolveVideoUrl(vid) : null
+  if (isAcceptableVideoResult(result)) return result
+
+  const currentUrl = videoEl?.currentSrc || videoEl?.src || videoEl?.querySelector?.('source')?.src
+  const metaVid = await extractVidFromVideoUrl(currentUrl)
+  if (metaVid && metaVid !== vid) {
+    dbg('Extracted vid from MP4 metadata:', metaVid)
+    result = await resolveVideoUrl(metaVid)
+    if (isAcceptableVideoResult(result)) return result
+  }
+
   return null
 }
 
@@ -715,7 +853,7 @@ function tryInjectVideo(el) {
 
   const btn = document.createElement('button')
   btn.className = '__df-btn'
-  btn.innerHTML = SVG_DL + ' 下载视频'
+  btn.innerHTML = SVG_DL + ' 下载无水印视频'
 
   let downloading = false
   btn.onclick = async e => {
@@ -727,9 +865,9 @@ function tryInjectVideo(el) {
     const vid = videoDb.get(mid)
     if (!vid) { btn.disabled = false; btn.textContent = '无视频'; downloading = false; return }
 
-    const result = await resolveVideoUrl(vid)
+    const result = await resolveVideoUrlForElement(vid, el.querySelector?.('video'))
     if (!result?.mainUrl) {
-      btn.disabled = false; btn.innerHTML = SVG_DL + ' 下载视频'
+      btn.disabled = false; btn.innerHTML = SVG_DL + ' 下载无水印视频'
       showToast('获取视频链接失败', 'fail')
       downloading = false
       return
@@ -743,7 +881,7 @@ function tryInjectVideo(el) {
     btn.disabled = false
     btn.innerHTML = '✓ 已发送下载'
     btn.classList.add('__df-ok')
-    setTimeout(() => { btn.innerHTML = SVG_DL + ' 下载视频'; btn.classList.remove('__df-ok') }, 2500)
+    setTimeout(() => { btn.innerHTML = SVG_DL + ' 下载无水印视频'; btn.classList.remove('__df-ok') }, 2500)
   }
 
   el.appendChild(btn)
@@ -845,6 +983,12 @@ function scanDOM() {
       if (!container) return
       ensureRelative(container)
 
+      const blockContainer = videoEl.closest?.('[class*="block-video"], [class*="video-block"], [class*="video_block"], [class*="VideoBlock"], [class*="video-container"], [class*="video-wrapper"]')
+      if (blockContainer?.querySelector?.('.__df-btn')) {
+        videoEl.__df_videoDirectDone = true
+        return
+      }
+
       const btn = document.createElement('button')
       btn.className = '__df-btn'
       btn.innerHTML = SVG_DL + ' 下载无水印视频'
@@ -876,7 +1020,7 @@ function scanDOM() {
         // 如果找到 vid，尝试通过 API 获取无水印视频
         if (vid) {
           dbg('Trying get_play_info with vid:', vid)
-          const result = await resolveVideoUrl(vid)
+          const result = await resolveVideoUrlForElement(vid, videoEl)
           if (result?.mainUrl) {
             dbg('API returned no-watermark URL:', result.mainUrl.substring(0, 150))
             const prefix = location.hostname.includes('dola.com') ? 'dola_video_' : 'doubao_video_'
@@ -894,7 +1038,7 @@ function scanDOM() {
         if (!vid && videoDb.size > 0) {
           const lastVid = Array.from(videoDb.values()).pop()
           dbg('Trying last vid from videoDb:', lastVid)
-          const result = await resolveVideoUrl(lastVid)
+          const result = await resolveVideoUrlForElement(lastVid, videoEl)
           if (result?.mainUrl) {
             const prefix = location.hostname.includes('dola.com') ? 'dola_video_' : 'doubao_video_'
             const fn = prefix + Date.now() + '.mp4'
@@ -907,16 +1051,8 @@ function scanDOM() {
           }
         }
 
-        // 最后回退：直接使用视频源 URL + 清理参数
-        dbg('Fallback: using cleaned video URL')
-        const currentUrl = videoEl.currentSrc || videoEl.src || videoSrc
-        const cleanUrl = makeNoWatermarkUrl(currentUrl)
-        const prefix = location.hostname.includes('dola.com') ? 'dola_video_' : 'doubao_video_'
-        const fn = prefix + Date.now() + '.mp4'
-        post({ type: '__DF_download', url: cleanUrl, filename: fn, __cbId: 'vd_' + Date.now() })
-        
         btn.disabled = false
-        btn.innerHTML = '✓ 已发送下载（可能有水印）'
+        btn.innerHTML = '未找到无水印链接'
         btn.classList.add('__df-fail')
         setTimeout(() => { btn.innerHTML = SVG_DL + ' 下载无水印视频'; btn.classList.remove('__df-fail') }, 3000)
       })
