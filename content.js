@@ -284,6 +284,8 @@ function harvest(obj) {
 // 从API响应节点中捕获视频URL
 function captureVideoUrls(vid, node) {
   if (videoUrlDb.has(vid)) return
+  dbg('Video API Node for vid:', vid, node)
+  console.log('[DF] Video API Node Full Data:', JSON.parse(JSON.stringify(node)))
   // 查找各种可能的视频URL字段
   const urlCandidates = [
     node.original_media_info?.main_url,
