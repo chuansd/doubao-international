@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>豆包自由版</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 头部 -->
+    <div class="header">
+      <div class="logo-wrap">
+        <span class="logo-text">自</span>
+      </div>
+      <div class="header-info">
+        <h1>豆包自由版</h1>
+        <p class="subtitle">去水印 · 解锁15秒</p>
+      </div>
+    </div>
+
+    <!-- 模式开关 -->
+    <div class="card mode-card">
+      <div class="mode-info">
+        <span class="mode-label">15秒视频模式</span>
+        <span class="mode-desc">将豆包视频时长从10秒提升至15秒</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="modeSwitch">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- 状态指示 -->
+    <div class="status-bar">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">等待页面加载…</span>
+    </div>
+
+    <!-- 统计 -->
+    <div class="stats">
+      <div class="stat-item">
+        <span class="stat-num" id="imgCount">0</span>
+        <span class="stat-label">图片</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num" id="vidCount">0</span>
+        <span class="stat-label">视频</span>
+      </div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div class="card help-card">
+      <p><strong>使用方式：</strong></p>
+      <ol>
+        <li>打开 <strong>doubao.com</strong> 或 <strong>dola.com</strong></li>
+        <li>正常生成图片或视频</li>
+        <li>图片右下角出现「下载原图」按钮</li>
+        <li>视频块上出现「下载视频」按钮</li>
+        <li>开启「15秒模式」后，视频时长自动变为15秒</li>
+      </ol>
+    </div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <span>v1.0.0 · 开源免费</span>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

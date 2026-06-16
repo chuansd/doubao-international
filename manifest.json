@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "豆包自由版",
+  "version": "1.0.0",
+  "description": "豆包视频/图片无水印下载 + 解锁15秒视频生成。开源免费，纯净无验证。",
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.doubao.com/*",
+    "https://www.dola.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.doubao.com/*", "https://www.dola.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.doubao.com/*", "https://www.dola.com/*"],
+      "js": ["forwarder.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
