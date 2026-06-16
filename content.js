@@ -286,11 +286,12 @@ function captureVideoUrls(vid, node) {
   if (videoUrlDb.has(vid)) return
   // 查找各种可能的视频URL字段
   const urlCandidates = [
+    node.original_media_info?.main_url,
+    node.no_watermark_url,
+    node.original_url,
     node.main_url, node.play_url, node.download_url, node.video_url,
     node.url, node.src, node.mp4_url, node.hls_url,
-    node.original_url, node.no_watermark_url,
     // 嵌套结构
-    node.original_media_info?.main_url,
     node.play_info?.main, node.play_info?.main_url,
     node.video?.main_url, node.video?.play_url, node.video?.url,
     node.media_info?.main_url
