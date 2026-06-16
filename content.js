@@ -638,12 +638,23 @@ async function resolveVideoUrl(vid) {
     }
   } catch (e) { dbg('resolveVideoUrl error:', e.message) }
 
-  // 尝试通过 background 脚本跨域调用 doubao.com / dola.com API 获取原始无水印地址
+  // 尝试通过 forwarder 跨域调用 doubao.com / dola.com API 获取原始无水印地址
   const bgResult = await new Promise(resolve => {
-    chrome.runtime.sendMessage({ type: '__DF_getVideoShareUrl', vid: vid }, function(res) {
-      if (chrome.runtime.lastError) resolve(null)
-      else resolve(res)
-    })
+    const listener = (e) => {
+      const msg = e.data
+      if (msg && msg.type === '__DF_videoUrlBack' && msg.vid === vid) {
+        window.removeEventListener('message', listener)
+        resolve(msg.result)
+      }
+    }
+    window.addEventListener('message', listener)
+    window.postMessage({ type: '__DF_getVideoUrl', vid: vid }, '*')
+    
+    // 超时防止死锁
+    setTimeout(() => {
+      window.removeEventListener('message', listener)
+      resolve(null)
+    }, 5000)
   })
   
   if (bgResult && bgResult.mainUrl) {
