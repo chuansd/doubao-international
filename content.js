@@ -1,6 +1,6 @@
 /**
  * content.js — MAIN world
- * 豆包自由版核心逻辑（支持 doubao.com + dola.com）
+ * 豆包国际版核心逻辑（支持 doubao.com + dola.com）
  * 
  * 功能：
  *   1. 劫持 JSON.parse → 提取无水印图片URL
